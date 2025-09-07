@@ -3,92 +3,193 @@ pokemon_data_manager.py
 Contains the PokemonDataManager class, responsible for all interactions
 with the PokéAPI, including fetching, parsing, and caching data.
 """
-
 import httpx
-import asyncio
-from typing import List, Dict, Any, Optional
-# IMPORT CHANGE: Added a '.' for relative import within the package
-# THE FIX
+import random
+from typing import List, Any, Optional
 from pokemon_models import Pokemon, PokemonStats, Move
 
 POKEAPI_BASE = "https://pokeapi.co/api/v2"
 
 class PokemonDataManager:
     """Manages all Pokémon data fetching, parsing, and caching."""
-    
     def __init__(self):
-        self.cache: Dict[str, Pokemon] = {}
+        self.cache: dict[str, Pokemon] = {}
+        # (THE FIX IS HERE) This is the complete, real type chart.
+        self.type_chart = {
+            "normal": {"fighting": 2.0, "ghost": 0.0},
+            "fighting": {"flying": 2.0, "rock": 0.5, "bug": 0.5, "psychic": 2.0, "dark": 0.5, "fairy": 2.0},
+            "flying": {"rock": 2.0, "bug": 0.5, "grass": 0.5, "electric": 2.0, "ice": 2.0, "fighting": 0.5, "ground": 0.0},
+            "poison": {"fighting": 0.5, "poison": 0.5, "ground": 2.0, "bug": 0.5, "grass": 0.5, "psychic": 2.0, "fairy": 0.5},
+            "ground": {"water": 2.0, "grass": 2.0, "ice": 2.0, "poison": 0.5, "rock": 0.5, "electric": 0.0},
+            "rock": {"fighting": 2.0, "ground": 2.0, "steel": 2.0, "water": 2.0, "grass": 2.0, "normal": 0.5, "flying": 0.5, "poison": 0.5, "fire": 0.5},
+            "bug": {"flying": 2.0, "rock": 2.0, "fire": 2.0, "fighting": 0.5, "ground": 0.5, "grass": 0.5},
+            "ghost": {"ghost": 2.0, "dark": 2.0, "normal": 0.0, "fighting": 0.0, "poison": 0.5, "bug": 0.5},
+            "steel": {"fighting": 2.0, "ground": 2.0, "fire": 2.0, "normal": 0.5, "flying": 0.5, "rock": 0.5, "bug": 0.5, "steel": 0.5, "grass": 0.5, "psychic": 0.5, "ice": 0.5, "dragon": 0.5, "fairy": 0.5, "poison": 0.0},
+            "fire": {"ground": 2.0, "rock": 2.0, "water": 2.0, "bug": 0.5, "steel": 0.5, "fire": 0.5, "grass": 0.5, "ice": 0.5, "fairy": 0.5},
+            "water": {"grass": 2.0, "electric": 2.0, "steel": 0.5, "fire": 0.5, "water": 0.5, "ice": 0.5},
+            "grass": {"flying": 2.0, "poison": 2.0, "bug": 2.0, "fire": 2.0, "ice": 2.0, "ground": 0.5, "water": 0.5, "grass": 0.5, "electric": 0.5},
+            "electric": {"ground": 2.0, "flying": 0.5, "steel": 0.5, "electric": 0.5},
+            "psychic": {"bug": 2.0, "ghost": 2.0, "dark": 2.0, "fighting": 0.5, "psychic": 0.5},
+            "ice": {"fighting": 2.0, "rock": 2.0, "steel": 2.0, "fire": 2.0, "ice": 0.5},
+            "dragon": {"ice": 2.0, "dragon": 2.0, "fairy": 2.0, "fire": 0.5, "water": 0.5, "grass": 0.5, "electric": 0.5},
+            "dark": {"fighting": 2.0, "bug": 2.0, "fairy": 2.0, "ghost": 0.5, "dark": 0.5, "psychic": 0.0},
+            "fairy": {"poison": 2.0, "steel": 2.0, "fighting": 0.5, "bug": 0.5, "dark": 0.5, "dragon": 0.0}
+        }
 
-    async def get_pokemon_details(self, name: str) -> Optional[Pokemon]:
-        identifier = name.lower().strip()
-        if identifier in self.cache:
-            return self.cache[identifier]
+    def get_type_effectiveness(self, move_type: str, target_types: List[str]) -> float:
+        """(FIXED) Calculates the real type effectiveness multiplier."""
+        multiplier = 1.0
+        move_type = move_type.lower()
+        for t in target_types:
+            target_type = t.lower()
+            if target_type in self.type_chart and move_type in self.type_chart[target_type]:
+                multiplier *= self.type_chart[target_type][move_type]
+        return multiplier
 
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                pokemon_res, species_res = await self._fetch_primary_data(client, identifier)
-                if not pokemon_res or not species_res: return None
-                pokemon_data = pokemon_res.json()
-                species_data = species_res.json()
-                evolution_paths = await self._fetch_and_parse_evolution(client, species_data)
-                moves_sample = await self._fetch_move_sample(client, pokemon_data.get('moves', []))
-                pokemon_object = self._assemble_pokemon_object(pokemon_data, species_data, evolution_paths, moves_sample)
-                self.cache[identifier] = pokemon_object
-                return pokemon_object
-        except httpx.HTTPError as e:
-            print(f"HTTP Error fetching data for {name}: {e}")
-            return None
-    
-    async def _fetch_primary_data(self, client: httpx.AsyncClient, name: str) -> tuple[Optional[httpx.Response], Optional[httpx.Response]]:
-        pokemon_req = client.get(f"{POKEAPI_BASE}/pokemon/{name}")
-        species_req = client.get(f"{POKEAPI_BASE}/pokemon-species/{name}")
-        responses = await asyncio.gather(pokemon_req, species_req, return_exceptions=True)
-        pokemon_res, species_res = responses
-        if isinstance(pokemon_res, Exception) or pokemon_res.status_code != 200: return None, None
-        if isinstance(species_res, Exception) or species_res.status_code != 200: return None, None
-        return pokemon_res, species_res
+    async def _fetch_and_parse_moves(self, client: httpx.AsyncClient, primary_data: dict) -> List[Move]:
+        """(FIXED) Fetches and intelligently curates a strategic moveset."""
+        
+        pokemon_types = [t['type']['name'] for t in primary_data['types']]
+        all_move_refs = primary_data['moves']
+        random.shuffle(all_move_refs) # Shuffle to get variety
 
-    async def _fetch_and_parse_evolution(self, client: httpx.AsyncClient, species_data: dict) -> List[str]:
-        evo_chain_url = species_data.get("evolution_chain", {}).get("url")
-        if not evo_chain_url: return []
-        evo_res = await client.get(evo_chain_url)
-        if evo_res.status_code == 200:
-            evo_data = evo_res.json()
-            evolution_paths_raw = self._parse_evolution_chain(evo_data.get('chain', {}))
-            return [" -> ".join(path) for path in evolution_paths_raw]
-        return []
+        # Prioritize STAB moves (Same Type Attack Bonus)
+        stab_moves = []
+        other_moves = []
 
-    def _parse_evolution_chain(self, chain_data: dict) -> List[List[str]]:
-        my_name = chain_data['species']['name'].capitalize()
-        next_nodes = chain_data.get('evolves_to', [])
-        if not next_nodes: return [[my_name]]
-        all_paths = []
-        for node in next_nodes:
-            child_paths = self._parse_evolution_chain(node)
-            for path in child_paths:
-                all_paths.append([my_name] + path)
-        return all_paths
-
-    async def _fetch_move_sample(self, client: httpx.AsyncClient, moves_data: list, sample_size: int = 5) -> List[Move]:
-        detailed_moves = []
-        moves_data.sort(key=lambda m: m['version_group_details'][-1]['level_learned_at'], reverse=True)
-        for move_info in moves_data[:sample_size]:
-            move_url = move_info['move']['url']
+        for move_ref in all_move_refs:
             try:
-                move_res = await client.get(move_url)
+                move_res = await client.get(move_ref['move']['url'])
                 if move_res.status_code == 200:
                     move_data = move_res.json()
-                    effect_entry = next((e for e in move_data.get('effect_entries', []) if e['language']['name'] == 'en'), None)
-                    effect_text = "No effect description."
-                    if effect_entry:
-                        effect_text = effect_entry['short_effect'].replace('$effect_chance', str(move_data.get('effect_chance', '')))
-                    detailed_moves.append(Move(name=move_data['name'].replace('-', ' ').title(), type=move_data['type']['name'], power=move_data.get('power'), accuracy=move_data.get('accuracy'), effect=effect_text))
-            except httpx.HTTPError: continue
-        return detailed_moves
+                    
+                    # We only want moves that deal damage for this simple simulator
+                    if move_data.get("power") is None or move_data.get("power") == 0:
+                        continue
+                    
+                    effect_description = "No effect description available."
+                    for entry in move_data.get('effect_entries', []):
+                        if entry.get('language', {}).get('name') == 'en':
+                            effect_description = entry.get('short_effect', "N/A")
+                            effect_description = effect_description.replace("$effect_chance", str(move_data.get('effect_chance', '')))
+                            break
+                    
+                    new_move = Move(
+                        name=move_data["name"].capitalize().replace('-', ' '),
+                        type=move_data["type"]["name"],
+                        power=move_data.get("power"),
+                        accuracy=move_data.get("accuracy"),
+                        effect=effect_description,
+                        category=move_data["damage_class"]["name"]
+                    )
 
-    def _assemble_pokemon_object(self, p_data: dict, s_data: dict, evo_paths: list, moves: list) -> Pokemon:
-        stats = {s['stat']['name'].replace('-', '_'): s['base_stat'] for s in p_data['stats']}
-        flavor_text_entry = next((ft for ft in s_data.get('flavor_text_entries', []) if ft['language']['name'] == 'en'), None)
-        flavor_text = flavor_text_entry['flavor_text'].replace('\n', ' ') if flavor_text_entry else "No Pokédex entry found."
-        ev_yields = [f"{s['effort']} {s['stat']['name'].upper()}" for s in p_data['stats'] if s['effort'] > 0]
-        return Pokemon(id=p_data['id'], name=p_data['name'].capitalize(), types=[t['type']['name'] for t in p_data['types']], stats=PokemonStats(**stats), abilities=[a['ability']['name'].replace('-', ' ').title() for a in p_data['abilities']], moves_sample=moves, evolution_paths=evo_paths, flavor_text=flavor_text, ev_yield=", ".join(ev_yields), sprite_url=p_data['sprites']['front_default'])
+                    # Sort moves into STAB and non-STAB lists
+                    if new_move.type in pokemon_types:
+                        stab_moves.append(new_move)
+                    else:
+                        other_moves.append(new_move)
+
+            except httpx.HTTPError:
+                continue
+        
+        # Create a final moveset of 4 moves: prioritize STAB, then fill with others
+        final_moveset = stab_moves[:2] + other_moves
+        return final_moveset[:4]
+
+    async def _fetch_and_parse_evolution(self, client: httpx.AsyncClient, species_url: str) -> tuple[List[str], str]:
+        """Fetches and parses the full evolution chain and flavor text."""
+        species_res = await client.get(species_url)
+        if species_res.status_code != 200:
+            return [], "No flavor text available."
+        
+        species_data = species_res.json()
+        
+        flavor_text = "No Pokédex entry found."
+        for entry in species_data.get('flavor_text_entries', []):
+            if entry.get('language', {}).get('name') == 'en':
+                flavor_text = entry.get('flavor_text', flavor_text).replace('\n', ' ').replace('\f', ' ')
+                break
+        
+        evo_chain_url = species_data.get("evolution_chain", {}).get("url")
+        evolution_paths = []
+        if evo_chain_url:
+            evo_res = await client.get(evo_chain_url)
+            if evo_res.status_code == 200:
+                evo_data = evo_res.json()
+                parsed_paths = self._parse_evolution_chain_recursive(evo_data.get('chain', {}))
+                evolution_paths = [" -> ".join(path) for path in parsed_paths]
+
+        return evolution_paths, flavor_text
+
+    def _parse_evolution_chain_recursive(self, chain_data: dict) -> List[List[str]]:
+        """Recursively parses the evolution chain to handle branches."""
+        my_name = chain_data['species']['name'].capitalize()
+        next_nodes = chain_data.get('evolves_to', [])
+
+        if not next_nodes:
+            return [[my_name]]
+
+        all_paths = []
+        for node in next_nodes:
+            child_paths = self._parse_evolution_chain_recursive(node)
+            for path in child_paths:
+                all_paths.append([my_name] + path)
+        
+        return all_paths
+
+    async def _fetch_primary_data(self, client: httpx.AsyncClient, name: str) -> Optional[dict]:
+        """Fetches the main data from the /pokemon/{name} endpoint."""
+        response = await client.get(f"{POKEAPI_BASE}/pokemon/{name.lower()}")
+        if response.status_code != 200:
+            return None
+        return response.json()
+
+    def _get_ev_yield(self, primary_data: dict) -> str:
+        """Parses the EV yield from the stats data."""
+        evs = []
+        for stat in primary_data.get('stats', []):
+            if stat['effort'] > 0:
+                evs.append(f"{stat['effort']} {stat['stat']['name'].upper().replace('-', ' ')}")
+        return ", ".join(evs) if evs else "N/A"
+
+    async def get_pokemon_details(self, name: str) -> Optional[Pokemon]:
+        """The main public method to fetch and assemble all Pokémon data."""
+        if name.lower() in self.cache:
+            return self.cache[name.lower()]
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                primary_data = await self._fetch_primary_data(client, name)
+                if not primary_data: return None
+
+                stats = PokemonStats(
+                    hp=primary_data['stats'][0]['base_stat'],
+                    attack=primary_data['stats'][1]['base_stat'],
+                    defense=primary_data['stats'][2]['base_stat'],
+                    special_attack=primary_data['stats'][3]['base_stat'],
+                    special_defense=primary_data['stats'][4]['base_stat'],
+                    speed=primary_data['stats'][5]['base_stat'],
+                )
+
+                evolution_paths, flavor_text = await self._fetch_and_parse_evolution(client, primary_data['species']['url'])
+                moves = await self._fetch_and_parse_moves(client, primary_data)
+
+                pokemon = Pokemon(
+                    id=primary_data['id'],
+                    name=primary_data['name'].capitalize(),
+                    types=[t['type']['name'].capitalize() for t in primary_data['types']],
+                    stats=stats,
+                    abilities=[a['ability']['name'].capitalize().replace('-', ' ') for a in primary_data['abilities']],
+                    moves_sample=moves,
+                    evolution_paths=evolution_paths,
+                    flavor_text=flavor_text,
+                    ev_yield=self._get_ev_yield(primary_data),
+                    sprite_url=primary_data['sprites']['front_default']
+                )
+
+                self.cache[name.lower()] = pokemon
+                return pokemon
+        except (httpx.HTTPError, KeyError) as e:
+            # Log the error if you have a logger configured
+            return None
+
