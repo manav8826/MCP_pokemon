@@ -1,0 +1,8 @@
+[project]
+name = "poke-server"
+version = "0.1.0"
+dependencies = [
+    "mcp-server[cli]",
+    "httpx",
+    "mcp[cli]>=1.13.1",
+]
